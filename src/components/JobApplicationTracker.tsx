@@ -1,9 +1,12 @@
 import { Edit, Link, Save, Search, Trash2 } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 
+import { JobApplication } from '../types/job';
+import { api } from '../services/api';
+
 const JobApplicationTracker = () => {
-  const [jobs, setJobs] = useState([]);
-  const [formData, setFormData] = useState({
+  const [jobs, setJobs] = useState<JobApplication[]>([]);
+  const [formData, setFormData] = useState<Omit<JobApplication, '_id'>>({
     company: '',
     companyUrl: '',
     position: '',
@@ -13,22 +16,26 @@ const JobApplicationTracker = () => {
     description: '',
     parsedJobDetails: null
   });
-  const [editingIndex, setEditingIndex] = useState(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
 
-  // Load jobs from localStorage on initial render
+  // Load jobs from API on initial render
   useEffect(() => {
-    const savedJobs = JSON.parse(localStorage.getItem('jobApplications') || '[]');
-    setJobs(savedJobs);
+    loadJobs();
   }, []);
 
-  // Save jobs to localStorage whenever jobs change
-  useEffect(() => {
-    localStorage.setItem('jobApplications', JSON.stringify(jobs));
-  }, [jobs]);
+  const loadJobs = async () => {
+    try {
+      const data = await api.getJobs();
+      setJobs(data);
+    } catch (err) {
+      setError('Failed to load job applications');
+      console.error('Error loading jobs:', err);
+    }
+  };
 
-  const handleInputChange = (e) => {
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { id, value } = e.target;
     setFormData(prev => ({
       ...prev,
@@ -65,22 +72,22 @@ const JobApplicationTracker = () => {
         description: parsedDetails.description || prev.description
       }));
     } catch (err) {
-      setError('Error parsing job posting: ' + err.message);
+      setError('Error parsing job posting: ' + (err instanceof Error ? err.message : 'Unknown error'));
     } finally {
       setIsLoading(false);
     }
   };
 
   // Basic job details extraction (can be expanded)
-  const extractJobDetails = (htmlContent) => {
+  const extractJobDetails = (htmlContent: string) => {
     const parser = new DOMParser();
     const doc = parser.parseFromString(htmlContent, 'text/html');
     
     // Try various common selectors for job details
-    const extractText = (selectors) => {
+    const extractText = (selectors: string[]) => {
       for (let selector of selectors) {
         const element = doc.querySelector(selector);
-        if (element) return element.textContent.trim();
+        if (element) return element.textContent?.trim() || null;
       }
       return null;
     };
@@ -107,44 +114,55 @@ const JobApplicationTracker = () => {
     };
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError(null);
 
-    if (editingIndex !== null) {
-      // Update existing job
-      const updatedJobs = [...jobs];
-      updatedJobs[editingIndex] = formData;
-      setJobs(updatedJobs);
-      setEditingIndex(null);
-    } else {
-      // Add new job
-      setJobs(prev => [...prev, formData]);
+    try {
+      if (editingId) {
+        // Update existing job
+        const updatedJob = await api.updateJob(editingId, formData);
+        setJobs(prev => prev.map(job => job._id === editingId ? updatedJob : job));
+        setEditingId(null);
+      } else {
+        // Add new job
+        const newJob = await api.createJob(formData);
+        setJobs(prev => [...prev, newJob]);
+      }
+
+      // Reset form
+      setFormData({
+        company: '',
+        companyUrl: '',
+        position: '',
+        jobPostingUrl: '',
+        applicationDate: '',
+        status: 'applied',
+        description: '',
+        parsedJobDetails: null
+      });
+    } catch (err) {
+      setError('Failed to save job application');
+      console.error('Error saving job:', err);
     }
-
-    // Reset form
-    setFormData({
-      company: '',
-      companyUrl: '',
-      position: '',
-      jobPostingUrl: '',
-      applicationDate: '',
-      status: 'applied',
-      description: '',
-      parsedJobDetails: null
-    });
   };
 
-  const handleEdit = (index) => {
-    const jobToEdit = jobs[index];
-    setFormData(jobToEdit);
-    setEditingIndex(index);
+  const handleEdit = (job: JobApplication) => {
+    setFormData(job);
+    setEditingId(job._id || null);
   };
 
-  const handleDelete = (index) => {
-    setJobs(prev => prev.filter((_, i) => i !== index));
+  const handleDelete = async (id: string) => {
+    try {
+      await api.deleteJob(id);
+      setJobs(prev => prev.filter(job => job._id !== id));
+    } catch (err) {
+      setError('Failed to delete job application');
+      console.error('Error deleting job:', err);
+    }
   };
 
-  const getStatusClass = (status) => {
+  const getStatusClass = (status: JobApplication['status']) => {
     const statusClasses = {
       applied: 'bg-blue-500',
       interview: 'bg-yellow-500',
@@ -312,7 +330,7 @@ const JobApplicationTracker = () => {
           className="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700 transition flex items-center justify-center"
         >
           <Save className="mr-2" /> 
-          {editingIndex !== null ? 'Update Job Application' : 'Add Job Application'}
+          {editingId ? 'Update Job Application' : 'Add Job Application'}
         </button>
       </form>
 
@@ -326,9 +344,9 @@ const JobApplicationTracker = () => {
           <p className="text-center text-gray-500">No job applications added yet</p>
         ) : (
           <div className="space-y-4">
-            {jobs.map((job, index) => (
+            {jobs.map((job) => (
               <div 
-                key={index} 
+                key={job._id} 
                 className="bg-gray-50 p-4 rounded-lg shadow-sm relative"
               >
                 <span 
@@ -377,14 +395,14 @@ const JobApplicationTracker = () => {
                 
                 <div className="flex space-x-2">
                   <button
-                    onClick={() => handleEdit(index)}
+                    onClick={() => handleEdit(job)}
                     className="bg-yellow-500 text-white px-3 py-2 rounded hover:bg-yellow-600 transition flex items-center"
                   >
                     <Edit className="mr-2" size={16} /> Edit
                   </button>
                   
                   <button
-                    onClick={() => handleDelete(index)}
+                    onClick={() => job._id && handleDelete(job._id)}
                     className="bg-red-500 text-white px-3 py-2 rounded hover:bg-red-600 transition flex items-center"
                   >
                     <Trash2 className="mr-2" size={16} /> Delete
